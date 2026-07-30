@@ -20,6 +20,7 @@ LLM_MODEL          = os.getenv("LLM_MODEL", "Qwen/Qwen3.5-4B")
 TOP_K              = int(os.getenv("TOP_K", 10))
 RERANK_TOP         = int(os.getenv("RERANK_TOP", 4))
 LLM_MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", 900))
+COLLECTION_NAME    = os.getenv("CHROMA_COLLECTION", "study_material")
 
 print("Loading embedding model...")
 embedder = SentenceTransformer(EMBED_MODEL)
@@ -43,61 +44,55 @@ llm = AutoModelForMultimodalLM.from_pretrained(
 print("✅ RAG engine ready\n")
 
 
-# ── Get collections based on semester / subject filter ───────────
-def _collections(sem=None, subject=None):
-    all_names = [c.name for c in chroma.list_collections()]
-    if sem and subject:
-        target = f"sem{sem}_{subject}"
-        names  = [target] if target in all_names else []
-    elif sem:
-        names = [n for n in all_names if n.startswith(f"sem{sem}_")]
-    else:
-        names = all_names
-    return [chroma.get_collection(n) for n in names]
+def _collection():
+    """The whole library lives in one collection; filters live in metadata."""
+    try:
+        return chroma.get_collection(COLLECTION_NAME)
+    except Exception:
+        return None
+
+
+def _where(sem: str | None, subject: str | None) -> dict | None:
+    filters = []
+    if sem:
+        filters.append({"sem": sem})
+    if subject:
+        filters.append({"subject": subject})
+    if not filters:
+        return None
+    return filters[0] if len(filters) == 1 else {"$and": filters}
 
 
 # ── Vector search ────────────────────────────────────────────────
-def _vector_search(query: str, cols: list) -> list[dict]:
-    if not cols:
+def _vector_search(query: str, collection, where: dict | None) -> list[dict]:
+    if not collection or collection.count() == 0:
         return []
-    qvec    = embedder.encode(query).tolist()
+    qvec = embedder.encode(query).tolist()
     results = []
-    for col in cols:
-        if col.count() == 0:
-            continue
-        try:
-            res = col.query(
-                query_embeddings=[qvec],
-                n_results=min(TOP_K, col.count()),
-                include=["documents", "metadatas", "distances"]
-            )
-            for doc, meta, dist in zip(
-                res["documents"][0],
-                res["metadatas"][0],
-                res["distances"][0]
-            ):
-                results.append({
-                    "text":    doc,
-                    "file":    meta.get("file",    ""),
-                    "page":    meta.get("page",    "?"),
-                    "sem":     meta.get("sem",     "?"),
-                    "subject": meta.get("subject", "?"),
-                    "score":   round(1 - dist, 4),
-                })
-        except Exception:
-            continue
+    try:
+        kwargs = {"query_embeddings": [qvec], "n_results": TOP_K,
+                  "include": ["documents", "metadatas", "distances"]}
+        if where:
+            kwargs["where"] = where
+        res = collection.query(**kwargs)
+        for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
+            results.append({"text": doc, "file": meta.get("file", ""),
+                            "page": meta.get("page", "?"), "sem": meta.get("sem", "?"),
+                            "subject": meta.get("subject", "?"), "score": round(1 - dist, 4)})
+    except Exception:
+        return []
     return results
 
 
 # ── BM25 keyword search ──────────────────────────────────────────
-def _bm25_search(query: str, cols: list) -> list[dict]:
-    all_docs, all_metas = [], []
-    for col in cols:
-        if col.count() == 0:
-            continue
-        data = col.get(include=["documents", "metadatas"])
-        all_docs.extend(data["documents"])
-        all_metas.extend(data["metadatas"])
+def _bm25_search(query: str, collection, where: dict | None) -> list[dict]:
+    if not collection or collection.count() == 0:
+        return []
+    kwargs = {"include": ["documents", "metadatas"]}
+    if where:
+        kwargs["where"] = where
+    data = collection.get(**kwargs)
+    all_docs, all_metas = data["documents"], data["metadatas"]
     if not all_docs:
         return []
     bm25   = BM25Okapi([d.lower().split() for d in all_docs])
@@ -114,9 +109,9 @@ def _bm25_search(query: str, cols: list) -> list[dict]:
 
 
 # ── Merge + dedup ────────────────────────────────────────────────
-def _hybrid(query: str, cols: list) -> list[dict]:
+def _hybrid(query: str, collection, where: dict | None) -> list[dict]:
     seen, merged = set(), []
-    for c in _vector_search(query, cols) + _bm25_search(query, cols):
+    for c in _vector_search(query, collection, where) + _bm25_search(query, collection, where):
         key = c["text"][:120]
         if key not in seen:
             seen.add(key)
@@ -195,14 +190,14 @@ def get_answer(query: str, sem: str = None, subject: str = None, history: list =
     if history is None:
         history = []
 
-    cols = _collections(sem, subject)
-    if not cols:
+    collection = _collection()
+    if not collection or collection.count() == 0:
         return {
-            "answer":  "No study material found. Please ingest your epub files first using:\n\n`uv run python src/ingest.py --sem 4 --subject operating_systems`",
+            "answer": "No study material found. Please ingest the folders in Data first.",
             "sources": []
         }
 
-    chunks     = _hybrid(query, cols)
+    chunks     = _hybrid(query, collection, _where(sem, subject))
     top_chunks = _rerank(query, chunks)
 
     if not top_chunks:

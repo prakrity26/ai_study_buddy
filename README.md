@@ -6,7 +6,8 @@ course material, reranks the most relevant passages, and uses local Hugging
 Face models to produce answers grounded in those sources.
 
 The Streamlit app runs locally with `uv`. ChromaDB runs in Docker and stores
-vectors in a Docker volume.
+all vectors in one `study_material` collection, with semester and subject kept
+as filterable metadata on every chunk.
 
 ## Features
 
@@ -68,15 +69,15 @@ sidebar. To prepare files manually, use this directory structure:
 
 ```text
 Data/
-└── Sem6/
-    └── software_engineering/
+└── Semester VI/
+    └── CSC375 - Software Engineering/
         ├── textbook.epub
         └── notes.pdf
 ```
 
-Folder names must use the subject slugs defined in `src/ingest.py`, such as
-`software_engineering`, `operating_systems`, or
-`database_management_system`.
+The ingester discovers the existing `Semester IV` through `Semester VIII`
+folders and derives semester, course code, and subject metadata directly from
+their names. Only folders containing EPUB or PDF files appear in the app.
 
 Index one subject:
 
@@ -114,8 +115,9 @@ All settings are optional.
 | `CHROMA_CONNECT_INTERVAL` | `1` | Seconds between Chroma connection retries |
 | `TOP_K` | `10` | Retrieval candidates per search method |
 | `RERANK_TOP` | `4` | Passages retained after reranking |
-| `CHUNK_SIZE` | `600` | Characters per indexed chunk |
-| `CHUNK_OVERLAP` | `80` | Overlap between adjacent chunks |
+| `CHROMA_COLLECTION` | `study_material` | Single collection holding all chunks |
+| `CHUNK_SIZE` | `2200` | Approximate maximum characters per chunk (~400–550 tokens) |
+| `CHUNK_OVERLAP` | `320` | Context retained between adjacent chunks (~60–80 tokens) |
 
 Example `.env`:
 

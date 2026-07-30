@@ -3,10 +3,12 @@
 #  Run:  uv run streamlit run app.py
 # ================================================================
 
+import os
 import subprocess, sys
 import streamlit as st
 from pathlib import Path
 from dotenv import load_dotenv
+from src.catalog import available_subjects
 from src.chroma_client import get_chroma_client
 from src.rag_engine import get_answer
 
@@ -87,10 +89,24 @@ SYLLABUS = {
     },
 }
 
-def indexed_cols() -> set:
+CATALOG = available_subjects()
+SUBJECT_PATHS = {(item["sem"], item["slug"]): item["path"] for item in CATALOG}
+COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "study_material")
+SYLLABUS = {}
+for item in CATALOG:
+    semester = f"Semester {item['sem']}"
+    SYLLABUS.setdefault(semester, {"num": item["sem"], "subjects": {}})
+    SYLLABUS[semester]["subjects"][item["slug"]] = item["label"]
+
+
+def indexed_subjects(sem: str = None) -> set:
     try:
         c = get_chroma_client()
-        return {col.name for col in c.list_collections()}
+        collection = c.get_collection(COLLECTION_NAME)
+        kwargs = {"include": ["metadatas"]}
+        if sem:
+            kwargs["where"] = {"sem": sem}
+        return {meta["subject"] for meta in collection.get(**kwargs)["metadatas"]}
     except Exception:
         return set()
 
@@ -332,7 +348,7 @@ st.markdown("""
 
 
 # ── HERO BANNER ──────────────────────────────────────────────────
-total_indexed = len(indexed_cols())
+total_indexed = len(indexed_subjects())
 st.markdown(f"""
 <div class="kb-hero">
   <div class="kb-hero-tag">Kathford AI Lab · Powered by RAG Technology</div>
@@ -371,7 +387,7 @@ with st.sidebar:
     if sem_label != "All Semesters":
         sem_num  = SYLLABUS[sem_label]["num"]
         subjects = SYLLABUS[sem_label]["subjects"]
-        indexed  = indexed_cols()
+        indexed = indexed_subjects(sem_num)
 
         st.markdown("### 📖 Select Subject")
         subj_options = ["All subjects"] + list(subjects.values())
@@ -382,8 +398,7 @@ with st.sidebar:
         # Subject index status
         st.markdown("#### 📊 Index Status")
         for key, name in subjects.items():
-            col_name = f"sem{sem_num}_{key}"
-            if col_name in indexed:
+            if key in indexed:
                 st.markdown(f'<div class="subj-pill ready">✅ {name}</div>', unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="subj-pill missing">📂 {name}</div>', unsafe_allow_html=True)
@@ -398,7 +413,7 @@ with st.sidebar:
 
         files = st.file_uploader("Choose .epub or .pdf", type=["epub","pdf"], accept_multiple_files=True)
         if files and st.button("📥 Index Now", use_container_width=True):
-            folder = BASE_DIR / "Data" / f"Sem{sem_num}" / upload_key
+            folder = SUBJECT_PATHS.get((sem_num, upload_key), BASE_DIR / "Data" / f"Sem{sem_num}" / upload_key)
             folder.mkdir(parents=True, exist_ok=True)
             for f in files:
                 (folder / f.name).write_bytes(f.read())
@@ -425,7 +440,7 @@ with st.sidebar:
     st.markdown("""
     <div style="text-align:center; padding: 12px 0; font-size: 11px; color: #aaa; line-height: 1.8;">
         <b style="color:#2196f3">Kathford AI Study Buddy</b><br>
-        Powered by RAG + Llama 3.1<br>
+        Powered by RAG + Qwen 3.5<br>
         Answers grounded in your textbooks only
     </div>
     """, unsafe_allow_html=True)
