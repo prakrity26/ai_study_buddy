@@ -7,16 +7,14 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
-import chromadb
-from chromadb.config import Settings
 from rank_bm25 import BM25Okapi
 from flashrank import Ranker, RerankRequest
 from groq import Groq
+from src.chroma_client import get_chroma_client
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
-CHROMA_PATH = os.getenv("CHROMA_PATH", str(BASE_DIR / "VectorStore" / "chroma_db"))
 EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
 LLM_MODEL   = os.getenv("LLM_MODEL",      "llama-3.1-8b-instant")
 TOP_K       = int(os.getenv("TOP_K",       10))
@@ -26,10 +24,7 @@ print("Loading embedding model...")
 embedder = SentenceTransformer(EMBED_MODEL)
 
 print("Connecting to ChromaDB...")
-chroma = chromadb.PersistentClient(
-    path=CHROMA_PATH,
-    settings=Settings(anonymized_telemetry=False)
-)
+chroma = get_chroma_client()
 
 print("Loading re-ranker...")
 reranker = Ranker(
