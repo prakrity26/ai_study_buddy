@@ -3,17 +3,15 @@
 #  Run:  uv run streamlit run app.py
 # ================================================================
 
-import os, subprocess, sys
+import subprocess, sys
 import streamlit as st
 from pathlib import Path
 from dotenv import load_dotenv
-import chromadb
-from chromadb.config import Settings
+from src.chroma_client import get_chroma_client
 from src.rag_engine import get_answer
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
-CHROMA_PATH = os.getenv("CHROMA_PATH", str(BASE_DIR / "VectorStore" / "chroma_db"))
 
 # ── Complete TU BSc CSIT Syllabus (all subjects, skip only pure math) ──
 SYLLABUS = {
@@ -91,7 +89,7 @@ SYLLABUS = {
 
 def indexed_cols() -> set:
     try:
-        c = chromadb.PersistentClient(path=CHROMA_PATH, settings=Settings(anonymized_telemetry=False))
+        c = get_chroma_client()
         return {col.name for col in c.list_collections()}
     except Exception:
         return set()

@@ -5,53 +5,62 @@ Tribhuvan University BSc CSIT students. It searches uploaded EPUB and PDF
 course material, reranks the most relevant passages, and uses Groq to produce
 answers grounded in those sources.
 
+The Streamlit app runs locally with `uv`. ChromaDB runs in Docker and stores
+vectors in a Docker volume.
+
 ## Features
 
+- Streamlit chat interface
 - Search across all indexed course material or filter by semester and subject
 - Hybrid semantic and BM25 keyword retrieval
 - FlashRank passage reranking
 - Answers with textbook and chapter/page references
 - EPUB and PDF ingestion
-- Streamlit interface with in-app uploads
-- Local persistent vector storage using ChromaDB
+- ChromaDB vector storage running in Docker
 
 ## Requirements
 
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- A [Groq API key](https://console.groq.com/keys)
+- Docker Desktop or Docker Engine with Docker Compose
+- uv
+- A Groq API key
 
-The project uses Python 3.11 by default. `uv` will install a compatible Python
-version automatically when needed.
-
-## Quick start
-
-Clone the repository and enter the project directory, then install the locked
-dependencies:
-
-```bash
-uv sync
-```
+## Quick Start
 
 Create a `.env` file in the project root:
 
 ```dotenv
 GROQ_API_KEY=your_groq_api_key
+CHROMA_HOST=localhost
+CHROMA_PORT=8000
 ```
 
-Start the application:
+Start ChromaDB:
+
+```bash
+docker compose up -d
+```
+
+Install the Python environment:
+
+```bash
+uv sync
+```
+
+Start the Streamlit app:
 
 ```bash
 uv run streamlit run app.py
 ```
 
-Open the local URL shown by Streamlit, usually
-`http://localhost:8501`.
+Open:
 
-> [!NOTE]
-> The first run downloads the embedding and reranking models. Later runs reuse
-> the local model cache.
+```text
+http://localhost:8501
+```
 
-## Add study material
+The first app run downloads the embedding and reranking models.
+
+## Add Study Material
 
 You can select a semester and upload EPUB or PDF files from the application
 sidebar. To prepare files manually, use this directory structure:
@@ -86,7 +95,7 @@ Index all available semesters:
 uv run python src/ingest.py --sem all
 ```
 
-Indexed content is stored under `VectorStore/` and is excluded from Git.
+Indexed vectors are stored in the `chroma_data` Docker volume.
 
 ## Configuration
 
@@ -94,22 +103,54 @@ All settings are optional except `GROQ_API_KEY`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GROQ_API_KEY` | — | Authenticates requests to Groq |
+| `GROQ_API_KEY` | required | Authenticates requests to Groq |
 | `LLM_MODEL` | `llama-3.1-8b-instant` | Groq model used to generate answers |
 | `EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | Sentence Transformer embedding model |
-| `CHROMA_PATH` | `VectorStore/chroma_db` | ChromaDB storage location |
+| `CHROMA_HOST` | unset | Chroma server host. Use `localhost` for Docker Chroma |
+| `CHROMA_PORT` | `8000` | Chroma server port |
+| `CHROMA_PATH` | `VectorStore/chroma_db` | Local fallback path when `CHROMA_HOST` is unset |
+| `CHROMA_CONNECT_RETRIES` | `30` | Chroma HTTP connection retries at startup |
+| `CHROMA_CONNECT_INTERVAL` | `1` | Seconds between Chroma connection retries |
 | `TOP_K` | `10` | Retrieval candidates per search method |
 | `RERANK_TOP` | `4` | Passages retained after reranking |
 | `CHUNK_SIZE` | `600` | Characters per indexed chunk |
 | `CHUNK_OVERLAP` | `80` | Overlap between adjacent chunks |
 
-Example:
+Example `.env`:
 
 ```dotenv
 GROQ_API_KEY=your_groq_api_key
+CHROMA_HOST=localhost
+CHROMA_PORT=8000
 LLM_MODEL=llama-3.1-8b-instant
 TOP_K=10
 RERANK_TOP=4
+```
+
+## Useful Docker Commands
+
+Start Chroma:
+
+```bash
+docker compose up -d
+```
+
+Stop Chroma:
+
+```bash
+docker compose down
+```
+
+Stop Chroma and remove indexed vectors:
+
+```bash
+docker compose down -v
+```
+
+View Chroma logs:
+
+```bash
+docker compose logs -f chroma
 ```
 
 ## Evaluation
@@ -120,34 +161,37 @@ The evaluation script checks generated answers against expected keywords:
 uv run python Evaluation/evaluate.py
 ```
 
-Evaluation requires the corresponding subjects to be indexed and a working
-Groq API key.
+Evaluation requires the corresponding subjects to be indexed and a working Groq
+API key.
 
-## Project structure
+## Project Structure
 
 ```text
 .
 ├── app.py                  # Streamlit user interface
+├── docker-compose.yml      # ChromaDB service
 ├── src/
+│   ├── chroma_client.py    # ChromaDB connection helper
 │   ├── ingest.py           # EPUB/PDF extraction and indexing
 │   └── rag_engine.py       # Retrieval, reranking, and answer generation
 ├── Evaluation/
 │   └── evaluate.py         # Keyword-based answer evaluation
 ├── Data/                   # Local course material
-├── VectorStore/            # Generated ChromaDB and reranker cache
 ├── pyproject.toml          # Project metadata and direct dependencies
 └── uv.lock                 # Reproducible dependency lockfile
 ```
 
 ## Troubleshooting
 
-### `uv: command not found`
+### Docker Cannot Connect
 
-Install `uv` using the
-[official installation instructions](https://docs.astral.sh/uv/getting-started/installation/),
-then reopen the terminal.
+Start Docker Desktop, then run:
 
-### Missing Groq API key
+```bash
+docker compose up -d
+```
+
+### Missing Groq API Key
 
 Confirm that `.env` is in the project root and contains:
 
@@ -155,17 +199,25 @@ Confirm that `.env` is in the project root and contains:
 GROQ_API_KEY=your_groq_api_key
 ```
 
-Restart Streamlit after changing the file.
-
-### No study material found
-
-Check that the selected semester and subject have been indexed. Run the
-relevant ingestion command again and confirm that it reports stored chunks.
-
-### Recreate the environment
-
-Ask `uv` to restore the environment from the lockfile:
+Restart the app after changing the file:
 
 ```bash
-uv sync --locked
+uv run streamlit run app.py
 ```
+
+### No Study Material Found
+
+Check that the selected semester and subject have been indexed. Run the relevant
+ingestion command again and confirm that it reports stored chunks.
+
+### Chroma Telemetry Logs
+
+If you see `Failed to send telemetry event ... capture() takes 1 positional
+argument but 3 were given`, refresh the uv environment:
+
+```bash
+uv sync
+```
+
+The project pins PostHog below version 3 because ChromaDB 0.5.3 uses the older
+PostHog Python API.

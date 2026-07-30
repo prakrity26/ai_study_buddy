@@ -24,14 +24,16 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 import fitz
-import chromadb
-from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
+
+try:
+    from src.chroma_client import get_chroma_client
+except ModuleNotFoundError:
+    from chroma_client import get_chroma_client
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
-CHROMA_PATH   = os.getenv("CHROMA_PATH", str(BASE_DIR / "VectorStore" / "chroma_db"))
 EMBED_MODEL   = os.getenv("EMBEDDING_MODEL",   "BAAI/bge-base-en-v1.5")
 CHUNK_SIZE    = int(os.getenv("CHUNK_SIZE",    600))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 80))
@@ -212,10 +214,7 @@ def store(chunks: list[dict], embedder):
     for c in chunks:
         by_col[f"sem{c['sem']}_{c['subject']}"].append(c)
 
-    client = chromadb.PersistentClient(
-        path=CHROMA_PATH,
-        settings=Settings(anonymized_telemetry=False)
-    )
+    client = get_chroma_client()
 
     for col_name, col_chunks in by_col.items():
         col      = client.get_or_create_collection(col_name, metadata={"hnsw:space": "cosine"})
