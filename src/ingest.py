@@ -3,13 +3,13 @@
 #  Reads EPUB (or PDF) files → chunks → stores in ChromaDB
 #
 #  USAGE:
-#    Single subject:  python src/ingest.py --sem 4 --subject operating_systems
-#    Full semester:   python src/ingest.py --sem 4
-#    Everything:      python src/ingest.py --sem all
+#    Single subject:  uv run python src/ingest.py --sem 4 --subject operating_systems
+#    Full semester:   uv run python src/ingest.py --sem 4
+#    Everything:      uv run python src/ingest.py --sem all
 #
 #  YOUR DATA FOLDER STRUCTURE:
-#    data/
-#      sem4/
+#    Data/
+#      Sem4/
 #        operating_systems/
 #          OS_Galvin.epub        ← place epub here
 #        computer_networks/
@@ -24,15 +24,17 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 import fitz
-import chromadb
-from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
+
+try:
+    from src.chroma_client import get_chroma_client
+except ModuleNotFoundError:
+    from chroma_client import get_chroma_client
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
-CHROMA_PATH   = os.getenv("CHROMA_PATH", str(BASE_DIR / "VectorStore" / "chroma_db"))
-EMBED_MODEL   = os.getenv("EMBEDDING_MODEL",   "BAAI/bge-base-en-v1.5")
+EMBED_MODEL   = os.getenv("EMBEDDING_MODEL",   "google/embeddinggemma-300m")
 CHUNK_SIZE    = int(os.getenv("CHUNK_SIZE",    600))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 80))
 
@@ -212,10 +214,7 @@ def store(chunks: list[dict], embedder):
     for c in chunks:
         by_col[f"sem{c['sem']}_{c['subject']}"].append(c)
 
-    client = chromadb.PersistentClient(
-        path=CHROMA_PATH,
-        settings=Settings(anonymized_telemetry=False)
-    )
+    client = get_chroma_client()
 
     for col_name, col_chunks in by_col.items():
         col      = client.get_or_create_collection(col_name, metadata={"hnsw:space": "cosine"})
@@ -284,7 +283,7 @@ def run(sem_arg: str, subject_arg: str = None):
             print(f"       → {len(chunks)} total chunks")
             store(chunks, embedder)
 
-    print("\n✅ Done! Run:  streamlit run app.py")
+    print("\n✅ Done! Run:  uv run streamlit run app.py")
 
 
 if __name__ == "__main__":

@@ -7,44 +7,40 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
-import chromadb
-from chromadb.config import Settings
 from rank_bm25 import BM25Okapi
 from flashrank import Ranker, RerankRequest
-from groq import Groq
+from transformers import AutoModelForMultimodalLM, AutoProcessor
+from src.chroma_client import get_chroma_client
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
-CHROMA_PATH = os.getenv("CHROMA_PATH", str(BASE_DIR / "vectorstore" / "chroma_db"))
-EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
-LLM_MODEL   = os.getenv("LLM_MODEL",      "llama-3.1-8b-instant")
-TOP_K       = int(os.getenv("TOP_K",       10))
-RERANK_TOP  = int(os.getenv("RERANK_TOP",  4))
+EMBED_MODEL        = os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
+LLM_MODEL          = os.getenv("LLM_MODEL", "Qwen/Qwen3.5-4B")
+TOP_K              = int(os.getenv("TOP_K", 10))
+RERANK_TOP         = int(os.getenv("RERANK_TOP", 4))
+LLM_MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", 900))
 
 print("Loading embedding model...")
 embedder = SentenceTransformer(EMBED_MODEL)
 
 print("Connecting to ChromaDB...")
-chroma = chromadb.PersistentClient(
-    path=CHROMA_PATH,
-    settings=Settings(anonymized_telemetry=False)
-)
+chroma = get_chroma_client()
 
 print("Loading re-ranker...")
 reranker = Ranker(
     model_name="ms-marco-MiniLM-L-12-v2",
-    cache_dir="./vectorstore/reranker_cache"
+    cache_dir=str(BASE_DIR / "VectorStore" / "reranker_cache")
 )
 
-groq_api_key = os.getenv("GROQ_API_KEY")
-if not groq_api_key:
-    print("⚠️ GROQ_API_KEY not found. Set it in the project .env file or your shell environment.")
-    groq_client = None
-else:
-    print("Connecting to Groq...")
-    groq_client = Groq(api_key=groq_api_key)
-    print("✅ RAG engine ready\n")
+print(f"Loading local Hugging Face LLM: {LLM_MODEL}...")
+processor = AutoProcessor.from_pretrained(LLM_MODEL)
+llm = AutoModelForMultimodalLM.from_pretrained(
+    LLM_MODEL,
+    torch_dtype="auto",
+    device_map="auto",
+)
+print("✅ RAG engine ready\n")
 
 
 # ── Get collections based on semester / subject filter ───────────
@@ -166,6 +162,34 @@ CONTEXT:
     return messages
 
 
+def _generate(messages: list[dict]) -> str:
+    """Generate a direct (non-thinking) answer from the local Qwen model."""
+    multimodal_messages = [
+        {
+            "role": message["role"],
+            "content": [{"type": "text", "text": message["content"]}],
+        }
+        for message in messages
+    ]
+    inputs = processor.apply_chat_template(
+        multimodal_messages,
+        add_generation_prompt=True,
+        enable_thinking=False,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(llm.device)
+    output_ids = llm.generate(
+        **inputs,
+        max_new_tokens=LLM_MAX_NEW_TOKENS,
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.8,
+    )
+    generated_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
+    return processor.decode(generated_ids, skip_special_tokens=True).strip()
+
+
 # ── Public function called by app.py ─────────────────────────────
 def get_answer(query: str, sem: str = None, subject: str = None, history: list = None) -> dict:
     if history is None:
@@ -174,7 +198,7 @@ def get_answer(query: str, sem: str = None, subject: str = None, history: list =
     cols = _collections(sem, subject)
     if not cols:
         return {
-            "answer":  "No study material found. Please ingest your epub files first using:\n\n`python src/ingest.py --sem 4 --subject operating_systems`",
+            "answer":  "No study material found. Please ingest your epub files first using:\n\n`uv run python src/ingest.py --sem 4 --subject operating_systems`",
             "sources": []
         }
 
@@ -196,19 +220,5 @@ def get_answer(query: str, sem: str = None, subject: str = None, history: list =
             sources.append({"file": c["file"], "page": c["page"],
                             "sem": c["sem"], "subject": c["subject"]})
 
-    if not groq_client:
-        return {
-            "answer": "Groq API key is missing. Please add GROQ_API_KEY to the project .env file or your environment and restart the app.",
-            "sources": sources
-        }
-
-    response = groq_client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=_prompt(query, top_chunks, history),
-        temperature=0.1,
-        max_tokens=900,
-    )
-
-    answer = response.choices[0].message.content
-
+    answer = _generate(_prompt(query, top_chunks, history))
     return {"answer": answer, "sources": sources}
