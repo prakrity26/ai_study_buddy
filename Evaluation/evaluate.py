@@ -1,6 +1,6 @@
 # ================================================================
 #  evaluate.py  —  Test accuracy before demo
-#  Run:  python evaluation/evaluate.py
+#  Run:  uv run python Evaluation/evaluate.py
 # ================================================================
 
 import sys

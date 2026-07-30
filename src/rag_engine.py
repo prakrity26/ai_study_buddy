@@ -16,7 +16,7 @@ from groq import Groq
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
-CHROMA_PATH = os.getenv("CHROMA_PATH", str(BASE_DIR / "vectorstore" / "chroma_db"))
+CHROMA_PATH = os.getenv("CHROMA_PATH", str(BASE_DIR / "VectorStore" / "chroma_db"))
 EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
 LLM_MODEL   = os.getenv("LLM_MODEL",      "llama-3.1-8b-instant")
 TOP_K       = int(os.getenv("TOP_K",       10))
@@ -34,7 +34,7 @@ chroma = chromadb.PersistentClient(
 print("Loading re-ranker...")
 reranker = Ranker(
     model_name="ms-marco-MiniLM-L-12-v2",
-    cache_dir="./vectorstore/reranker_cache"
+    cache_dir=str(BASE_DIR / "VectorStore" / "reranker_cache")
 )
 
 groq_api_key = os.getenv("GROQ_API_KEY")
@@ -174,7 +174,7 @@ def get_answer(query: str, sem: str = None, subject: str = None, history: list =
     cols = _collections(sem, subject)
     if not cols:
         return {
-            "answer":  "No study material found. Please ingest your epub files first using:\n\n`python src/ingest.py --sem 4 --subject operating_systems`",
+            "answer":  "No study material found. Please ingest your epub files first using:\n\n`uv run python src/ingest.py --sem 4 --subject operating_systems`",
             "sources": []
         }
 
