@@ -1,9 +1,9 @@
 # ================================================================
 #  app.py  —  Kathford BSc CSIT AI Study Buddy
-#  Run:  streamlit run app.py
+#  Run:  uv run streamlit run app.py
 # ================================================================
 
-import os, subprocess
+import os, subprocess, sys
 import streamlit as st
 from pathlib import Path
 from dotenv import load_dotenv
@@ -400,14 +400,15 @@ with st.sidebar:
 
         files = st.file_uploader("Choose .epub or .pdf", type=["epub","pdf"], accept_multiple_files=True)
         if files and st.button("📥 Index Now", use_container_width=True):
-            folder = Path("data") / f"sem{sem_num}" / upload_key
+            folder = BASE_DIR / "Data" / f"Sem{sem_num}" / upload_key
             folder.mkdir(parents=True, exist_ok=True)
             for f in files:
                 (folder / f.name).write_bytes(f.read())
             with st.spinner(f"Indexing {len(files)} file(s)..."):
                 r = subprocess.run(
-                    ["python", "src/ingest.py", "--sem", sem_num, "--subject", upload_key],
-                    capture_output=True, text=True
+                    [sys.executable, str(BASE_DIR / "src" / "ingest.py"),
+                     "--sem", sem_num, "--subject", upload_key],
+                    capture_output=True, text=True, cwd=BASE_DIR
                 )
             if r.returncode == 0:
                 st.success(f"✅ {len(files)} file(s) indexed!")

@@ -1,4 +1,8 @@
+.venv/
 venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
 .env
 VectorStore/chroma_db/
 VectorStore/reranker_cache/

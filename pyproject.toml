@@ -1,0 +1,23 @@
+[project]
+name = "ai-study-buddy"
+version = "0.1.0"
+description = "A RAG-powered study assistant for TU BSc CSIT course material"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "beautifulsoup4==4.12.3",
+    "chromadb==0.5.3",
+    "ebooklib==0.18",
+    "flashrank==0.2.8",
+    "groq==0.9.0",
+    "httpx==0.27.2",
+    "pymupdf==1.24.5",
+    "python-dotenv==1.0.1",
+    "rank-bm25==0.2.2",
+    "sentence-transformers==3.0.1",
+    "streamlit==1.37.0",
+    "tqdm==4.66.4",
+]
+
+[tool.uv]
+package = false

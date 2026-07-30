@@ -3,13 +3,13 @@
 #  Reads EPUB (or PDF) files → chunks → stores in ChromaDB
 #
 #  USAGE:
-#    Single subject:  python src/ingest.py --sem 4 --subject operating_systems
-#    Full semester:   python src/ingest.py --sem 4
-#    Everything:      python src/ingest.py --sem all
+#    Single subject:  uv run python src/ingest.py --sem 4 --subject operating_systems
+#    Full semester:   uv run python src/ingest.py --sem 4
+#    Everything:      uv run python src/ingest.py --sem all
 #
 #  YOUR DATA FOLDER STRUCTURE:
-#    data/
-#      sem4/
+#    Data/
+#      Sem4/
 #        operating_systems/
 #          OS_Galvin.epub        ← place epub here
 #        computer_networks/
@@ -284,7 +284,7 @@ def run(sem_arg: str, subject_arg: str = None):
             print(f"       → {len(chunks)} total chunks")
             store(chunks, embedder)
 
-    print("\n✅ Done! Run:  streamlit run app.py")
+    print("\n✅ Done! Run:  uv run streamlit run app.py")
 
 
 if __name__ == "__main__":
