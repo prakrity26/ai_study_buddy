@@ -9,13 +9,13 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 from flashrank import Ranker, RerankRequest
-from transformers import AutoModelForMultimodalLM, AutoProcessor
 from src.chroma_client import get_chroma_client
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
-EMBED_MODEL        = os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
+EMBED_MODEL        = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
 LLM_MODEL          = os.getenv("LLM_MODEL", "Qwen/Qwen3.5-4B")
 TOP_K              = int(os.getenv("TOP_K", 10))
 RERANK_TOP         = int(os.getenv("RERANK_TOP", 4))
@@ -35,8 +35,8 @@ reranker = Ranker(
 )
 
 print(f"Loading local Hugging Face LLM: {LLM_MODEL}...")
-processor = AutoProcessor.from_pretrained(LLM_MODEL)
-llm = AutoModelForMultimodalLM.from_pretrained(
+tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
+llm = AutoModelForCausalLM.from_pretrained(
     LLM_MODEL,
     torch_dtype="auto",
     device_map="auto",
@@ -156,37 +156,36 @@ CONTEXT:
     messages.append({"role": "user", "content": query})
     return messages
 
-
 def _generate(messages: list[dict]) -> str:
-    """Generate a direct (non-thinking) answer from the local Qwen model."""
-    multimodal_messages = [
-        {
-            "role": message["role"],
-            "content": [{"type": "text", "text": message["content"]}],
-        }
-        for message in messages
-    ]
-    inputs = processor.apply_chat_template(
-        multimodal_messages,
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
         add_generation_prompt=True,
         enable_thinking=False,
-        tokenize=True,
-        return_dict=True,
-        return_tensors="pt",
-    ).to(llm.device)
+    )
+
+    inputs = tokenizer(text, return_tensors="pt").to(llm.device)
+
     output_ids = llm.generate(
         **inputs,
-        max_new_tokens=LLM_MAX_NEW_TOKENS,
+        max_new_tokens=400,
         do_sample=True,
         temperature=0.7,
         top_p=0.8,
     )
-    generated_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
-    return processor.decode(generated_ids, skip_special_tokens=True).strip()
 
+    generated_ids = output_ids[:, inputs.input_ids.shape[-1]:]
+    return tokenizer.batch_decode(
+        generated_ids,
+        skip_special_tokens=True,
+    )[0].strip()
 
-# ── Public function called by app.py ─────────────────────────────
-def get_answer(query: str, sem: str = None, subject: str = None, history: list = None) -> dict:
+def get_answer(
+    query: str,
+    sem: str = None,
+    subject: str = None,
+    history: list = None,
+) -> dict:
     if history is None:
         history = []
 
@@ -194,26 +193,31 @@ def get_answer(query: str, sem: str = None, subject: str = None, history: list =
     if not collection or collection.count() == 0:
         return {
             "answer": "No study material found. Please ingest the folders in Data first.",
-            "sources": []
+            "sources": [],
         }
 
-    chunks     = _hybrid(query, collection, _where(sem, subject))
+    chunks = _hybrid(query, collection, _where(sem, subject))
     top_chunks = _rerank(query, chunks)
 
     if not top_chunks:
         return {
-            "answer":  "I couldn't find relevant content for this question in your study material.",
-            "sources": []
+            "answer": "I couldn't find relevant content for this question in your study material.",
+            "sources": [],
         }
 
-    seen    = set()
-    sources = []
-    for c in top_chunks:
-        key = f"{c['file']}_{c['page']}"
+    seen, sources = set(), []
+    for chunk in top_chunks:
+        key = f"{chunk['file']}_{chunk['page']}"
         if key not in seen:
             seen.add(key)
-            sources.append({"file": c["file"], "page": c["page"],
-                            "sem": c["sem"], "subject": c["subject"]})
+            sources.append({
+                "file": chunk["file"],
+                "page": chunk["page"],
+                "sem": chunk["sem"],
+                "subject": chunk["subject"],
+            })
 
-    answer = _generate(_prompt(query, top_chunks, history))
-    return {"answer": answer, "sources": sources}
+    return {
+        "answer": _generate(_prompt(query, top_chunks, history)),
+        "sources": sources,
+    }

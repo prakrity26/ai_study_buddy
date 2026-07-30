@@ -15,10 +15,11 @@ dependencies = [
     "pymupdf==1.24.5",
     "python-dotenv==1.0.1",
     "rank-bm25==0.2.2",
-    "sentence-transformers==3.0.1",
+    "sentence-transformers==5.2.0",
     "streamlit==1.37.0",
     "tqdm==4.66.4",
     "transformers @ git+https://github.com/huggingface/transformers.git@main",
+    "torchvision>=0.28.0",
 ]
 
 [tool.uv]
