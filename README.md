@@ -2,11 +2,12 @@
 
 AI Study Buddy is a retrieval-augmented generation (RAG) application for
 Tribhuvan University BSc CSIT students. It searches uploaded EPUB and PDF
-course material, reranks the most relevant passages, and uses Groq to produce
-answers grounded in those sources.
+course material, reranks the most relevant passages, and uses local Hugging
+Face models to produce answers grounded in those sources.
 
 The Streamlit app runs locally with `uv`. ChromaDB runs in Docker and stores
-vectors in a Docker volume.
+all vectors in one `study_material` collection, with semester and subject kept
+as filterable metadata on every chunk.
 
 ## Features
 
@@ -22,14 +23,13 @@ vectors in a Docker volume.
 
 - Docker Desktop or Docker Engine with Docker Compose
 - uv
-- A Groq API key
+- Enough local memory to run Qwen 3.5 4B (a GPU or Apple Silicon is recommended)
 
 ## Quick Start
 
 Create a `.env` file in the project root:
 
 ```dotenv
-GROQ_API_KEY=your_groq_api_key
 CHROMA_HOST=localhost
 CHROMA_PORT=8000
 ```
@@ -58,7 +58,9 @@ Open:
 http://localhost:8501
 ```
 
-The first app run downloads the embedding and reranking models.
+The first app run downloads the embedding model, reranker, and local Qwen 3.5
+4B model. This can take several gigabytes; the model stays in the local Hugging
+Face cache for later runs.
 
 ## Add Study Material
 
@@ -67,15 +69,15 @@ sidebar. To prepare files manually, use this directory structure:
 
 ```text
 Data/
-└── Sem6/
-    └── software_engineering/
+└── Semester VI/
+    └── CSC375 - Software Engineering/
         ├── textbook.epub
         └── notes.pdf
 ```
 
-Folder names must use the subject slugs defined in `src/ingest.py`, such as
-`software_engineering`, `operating_systems`, or
-`database_management_system`.
+The ingester discovers the existing `Semester IV` through `Semester VIII`
+folders and derives semester, course code, and subject metadata directly from
+their names. Only folders containing EPUB or PDF files appear in the app.
 
 Index one subject:
 
@@ -99,13 +101,13 @@ Indexed vectors are stored in the `chroma_data` Docker volume.
 
 ## Configuration
 
-All settings are optional except `GROQ_API_KEY`.
+All settings are optional.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GROQ_API_KEY` | required | Authenticates requests to Groq |
-| `LLM_MODEL` | `llama-3.1-8b-instant` | Groq model used to generate answers |
-| `EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | Sentence Transformer embedding model |
+| `LLM_MODEL` | `Qwen/Qwen3.5-4B` | Local Hugging Face model used to generate answers |
+| `EMBEDDING_MODEL` | `google/embeddinggemma-300m` | Local Sentence Transformer model used to create and search vectors |
+| `LLM_MAX_NEW_TOKENS` | `900` | Maximum length of each answer |
 | `CHROMA_HOST` | unset | Chroma server host. Use `localhost` for Docker Chroma |
 | `CHROMA_PORT` | `8000` | Chroma server port |
 | `CHROMA_PATH` | `VectorStore/chroma_db` | Local fallback path when `CHROMA_HOST` is unset |
@@ -113,18 +115,31 @@ All settings are optional except `GROQ_API_KEY`.
 | `CHROMA_CONNECT_INTERVAL` | `1` | Seconds between Chroma connection retries |
 | `TOP_K` | `10` | Retrieval candidates per search method |
 | `RERANK_TOP` | `4` | Passages retained after reranking |
-| `CHUNK_SIZE` | `600` | Characters per indexed chunk |
-| `CHUNK_OVERLAP` | `80` | Overlap between adjacent chunks |
+| `CHROMA_COLLECTION` | `study_material` | Single collection holding all chunks |
+| `CHUNK_SIZE` | `2200` | Approximate maximum characters per chunk (~400–550 tokens) |
+| `CHUNK_OVERLAP` | `320` | Context retained between adjacent chunks (~60–80 tokens) |
 
 Example `.env`:
 
 ```dotenv
-GROQ_API_KEY=your_groq_api_key
 CHROMA_HOST=localhost
 CHROMA_PORT=8000
-LLM_MODEL=llama-3.1-8b-instant
+LLM_MODEL=Qwen/Qwen3.5-4B
+EMBEDDING_MODEL=google/embeddinggemma-300m
 TOP_K=10
 RERANK_TOP=4
+```
+
+### Re-index after changing the embedding model
+
+Vectors created by one embedding model cannot be searched reliably by another.
+If this project was previously indexed with `BAAI/bge-base-en-v1.5`, remove the
+old Chroma volume before ingesting again:
+
+```bash
+docker compose down -v
+docker compose up -d
+uv run python src/ingest.py --sem all
 ```
 
 ## Useful Docker Commands
@@ -161,8 +176,8 @@ The evaluation script checks generated answers against expected keywords:
 uv run python Evaluation/evaluate.py
 ```
 
-Evaluation requires the corresponding subjects to be indexed and a working Groq
-API key.
+Evaluation requires the corresponding subjects to be indexed and enough local
+memory to load the Hugging Face models.
 
 ## Project Structure
 
@@ -191,19 +206,12 @@ Start Docker Desktop, then run:
 docker compose up -d
 ```
 
-### Missing Groq API Key
+### Local model runs out of memory
 
-Confirm that `.env` is in the project root and contains:
-
-```dotenv
-GROQ_API_KEY=your_groq_api_key
-```
-
-Restart the app after changing the file:
-
-```bash
-uv run streamlit run app.py
-```
+Qwen 3.5 4B is loaded locally and needs substantially more memory than the
+previous API-based setup. Close other memory-heavy applications, use a GPU or
+Apple Silicon machine with sufficient unified memory, or set `LLM_MODEL` to a
+smaller compatible local model.
 
 ### No Study Material Found
 

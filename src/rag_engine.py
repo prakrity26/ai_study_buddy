@@ -9,16 +9,18 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 from flashrank import Ranker, RerankRequest
-from groq import Groq
+from transformers import AutoModelForMultimodalLM, AutoProcessor
 from src.chroma_client import get_chroma_client
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
-EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
-LLM_MODEL   = os.getenv("LLM_MODEL",      "llama-3.1-8b-instant")
-TOP_K       = int(os.getenv("TOP_K",       10))
-RERANK_TOP  = int(os.getenv("RERANK_TOP",  4))
+EMBED_MODEL        = os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
+LLM_MODEL          = os.getenv("LLM_MODEL", "Qwen/Qwen3.5-4B")
+TOP_K              = int(os.getenv("TOP_K", 10))
+RERANK_TOP         = int(os.getenv("RERANK_TOP", 4))
+LLM_MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", 900))
+COLLECTION_NAME    = os.getenv("CHROMA_COLLECTION", "study_material")
 
 print("Loading embedding model...")
 embedder = SentenceTransformer(EMBED_MODEL)
@@ -32,71 +34,65 @@ reranker = Ranker(
     cache_dir=str(BASE_DIR / "VectorStore" / "reranker_cache")
 )
 
-groq_api_key = os.getenv("GROQ_API_KEY")
-if not groq_api_key:
-    print("⚠️ GROQ_API_KEY not found. Set it in the project .env file or your shell environment.")
-    groq_client = None
-else:
-    print("Connecting to Groq...")
-    groq_client = Groq(api_key=groq_api_key)
-    print("✅ RAG engine ready\n")
+print(f"Loading local Hugging Face LLM: {LLM_MODEL}...")
+processor = AutoProcessor.from_pretrained(LLM_MODEL)
+llm = AutoModelForMultimodalLM.from_pretrained(
+    LLM_MODEL,
+    torch_dtype="auto",
+    device_map="auto",
+)
+print("✅ RAG engine ready\n")
 
 
-# ── Get collections based on semester / subject filter ───────────
-def _collections(sem=None, subject=None):
-    all_names = [c.name for c in chroma.list_collections()]
-    if sem and subject:
-        target = f"sem{sem}_{subject}"
-        names  = [target] if target in all_names else []
-    elif sem:
-        names = [n for n in all_names if n.startswith(f"sem{sem}_")]
-    else:
-        names = all_names
-    return [chroma.get_collection(n) for n in names]
+def _collection():
+    """The whole library lives in one collection; filters live in metadata."""
+    try:
+        return chroma.get_collection(COLLECTION_NAME)
+    except Exception:
+        return None
+
+
+def _where(sem: str | None, subject: str | None) -> dict | None:
+    filters = []
+    if sem:
+        filters.append({"sem": sem})
+    if subject:
+        filters.append({"subject": subject})
+    if not filters:
+        return None
+    return filters[0] if len(filters) == 1 else {"$and": filters}
 
 
 # ── Vector search ────────────────────────────────────────────────
-def _vector_search(query: str, cols: list) -> list[dict]:
-    if not cols:
+def _vector_search(query: str, collection, where: dict | None) -> list[dict]:
+    if not collection or collection.count() == 0:
         return []
-    qvec    = embedder.encode(query).tolist()
+    qvec = embedder.encode(query).tolist()
     results = []
-    for col in cols:
-        if col.count() == 0:
-            continue
-        try:
-            res = col.query(
-                query_embeddings=[qvec],
-                n_results=min(TOP_K, col.count()),
-                include=["documents", "metadatas", "distances"]
-            )
-            for doc, meta, dist in zip(
-                res["documents"][0],
-                res["metadatas"][0],
-                res["distances"][0]
-            ):
-                results.append({
-                    "text":    doc,
-                    "file":    meta.get("file",    ""),
-                    "page":    meta.get("page",    "?"),
-                    "sem":     meta.get("sem",     "?"),
-                    "subject": meta.get("subject", "?"),
-                    "score":   round(1 - dist, 4),
-                })
-        except Exception:
-            continue
+    try:
+        kwargs = {"query_embeddings": [qvec], "n_results": TOP_K,
+                  "include": ["documents", "metadatas", "distances"]}
+        if where:
+            kwargs["where"] = where
+        res = collection.query(**kwargs)
+        for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
+            results.append({"text": doc, "file": meta.get("file", ""),
+                            "page": meta.get("page", "?"), "sem": meta.get("sem", "?"),
+                            "subject": meta.get("subject", "?"), "score": round(1 - dist, 4)})
+    except Exception:
+        return []
     return results
 
 
 # ── BM25 keyword search ──────────────────────────────────────────
-def _bm25_search(query: str, cols: list) -> list[dict]:
-    all_docs, all_metas = [], []
-    for col in cols:
-        if col.count() == 0:
-            continue
-        data = col.get(include=["documents", "metadatas"])
-        all_docs.extend(data["documents"])
-        all_metas.extend(data["metadatas"])
+def _bm25_search(query: str, collection, where: dict | None) -> list[dict]:
+    if not collection or collection.count() == 0:
+        return []
+    kwargs = {"include": ["documents", "metadatas"]}
+    if where:
+        kwargs["where"] = where
+    data = collection.get(**kwargs)
+    all_docs, all_metas = data["documents"], data["metadatas"]
     if not all_docs:
         return []
     bm25   = BM25Okapi([d.lower().split() for d in all_docs])
@@ -113,9 +109,9 @@ def _bm25_search(query: str, cols: list) -> list[dict]:
 
 
 # ── Merge + dedup ────────────────────────────────────────────────
-def _hybrid(query: str, cols: list) -> list[dict]:
+def _hybrid(query: str, collection, where: dict | None) -> list[dict]:
     seen, merged = set(), []
-    for c in _vector_search(query, cols) + _bm25_search(query, cols):
+    for c in _vector_search(query, collection, where) + _bm25_search(query, collection, where):
         key = c["text"][:120]
         if key not in seen:
             seen.add(key)
@@ -161,19 +157,47 @@ CONTEXT:
     return messages
 
 
+def _generate(messages: list[dict]) -> str:
+    """Generate a direct (non-thinking) answer from the local Qwen model."""
+    multimodal_messages = [
+        {
+            "role": message["role"],
+            "content": [{"type": "text", "text": message["content"]}],
+        }
+        for message in messages
+    ]
+    inputs = processor.apply_chat_template(
+        multimodal_messages,
+        add_generation_prompt=True,
+        enable_thinking=False,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(llm.device)
+    output_ids = llm.generate(
+        **inputs,
+        max_new_tokens=LLM_MAX_NEW_TOKENS,
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.8,
+    )
+    generated_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
+    return processor.decode(generated_ids, skip_special_tokens=True).strip()
+
+
 # ── Public function called by app.py ─────────────────────────────
 def get_answer(query: str, sem: str = None, subject: str = None, history: list = None) -> dict:
     if history is None:
         history = []
 
-    cols = _collections(sem, subject)
-    if not cols:
+    collection = _collection()
+    if not collection or collection.count() == 0:
         return {
-            "answer":  "No study material found. Please ingest your epub files first using:\n\n`uv run python src/ingest.py --sem 4 --subject operating_systems`",
+            "answer": "No study material found. Please ingest the folders in Data first.",
             "sources": []
         }
 
-    chunks     = _hybrid(query, cols)
+    chunks     = _hybrid(query, collection, _where(sem, subject))
     top_chunks = _rerank(query, chunks)
 
     if not top_chunks:
@@ -191,19 +215,5 @@ def get_answer(query: str, sem: str = None, subject: str = None, history: list =
             sources.append({"file": c["file"], "page": c["page"],
                             "sem": c["sem"], "subject": c["subject"]})
 
-    if not groq_client:
-        return {
-            "answer": "Groq API key is missing. Please add GROQ_API_KEY to the project .env file or your environment and restart the app.",
-            "sources": sources
-        }
-
-    response = groq_client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=_prompt(query, top_chunks, history),
-        temperature=0.1,
-        max_tokens=900,
-    )
-
-    answer = response.choices[0].message.content
-
+    answer = _generate(_prompt(query, top_chunks, history))
     return {"answer": answer, "sources": sources}

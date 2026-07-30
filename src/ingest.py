@@ -1,294 +1,191 @@
-# ================================================================
-#  ingest.py  —  TU BSc CSIT AI Study Buddy
-#  Reads EPUB (or PDF) files → chunks → stores in ChromaDB
-#
-#  USAGE:
-#    Single subject:  uv run python src/ingest.py --sem 4 --subject operating_systems
-#    Full semester:   uv run python src/ingest.py --sem 4
-#    Everything:      uv run python src/ingest.py --sem all
-#
-#  YOUR DATA FOLDER STRUCTURE:
-#    Data/
-#      Sem4/
-#        operating_systems/
-#          OS_Galvin.epub        ← place epub here
-#        computer_networks/
-#          CN_Forouzan.epub
-# ================================================================
+"""Extract local EPUB/PDF books, chunk them, and index one Chroma collection."""
 
-import os, re, argparse
+import argparse
+import os
+import re
 from pathlib import Path
-from dotenv import load_dotenv
-from tqdm import tqdm
+
 import ebooklib
-from ebooklib import epub
-from bs4 import BeautifulSoup
 import fitz
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from ebooklib import epub
 from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 
 try:
+    from src.catalog import available_subjects
     from src.chroma_client import get_chroma_client
 except ModuleNotFoundError:
+    from catalog import available_subjects
     from chroma_client import get_chroma_client
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
-EMBED_MODEL   = os.getenv("EMBEDDING_MODEL",   "BAAI/bge-base-en-v1.5")
-CHUNK_SIZE    = int(os.getenv("CHUNK_SIZE",    600))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 80))
-
-# ── Your exact TU BSc CSIT subjects (skipping maths/stats/DSA) ──
-SEMESTER_SUBJECTS = {
-    "1": [
-        "introduction_to_it",
-        "c_programming",
-        "digital_logic",
-        "physics",
-    ],
-    "2": [
-        "object_oriented_programming_cpp",
-        "microprocessor",
-    ],
-    "3": [
-        "computer_architecture",
-        "computer_graphics",
-    ],
-    "4": [
-        "theory_of_computation",
-        "computer_networks",
-        "operating_systems",
-        "database_management_system",
-        "artificial_intelligence",
-    ],
-    "5": [
-        "system_analysis_and_design",
-        "cryptography",
-        "web_technology",
-        "multimedia_computing",
-    ],
-    "6": [
-        "technical_writing",
-        "software_engineering",
-        "egovernance",
-        "dotnet_centric_computing",
-        "ecommerce",
-    ],
-    "7": [
-        "advanced_java_programming",
-        "data_warehousing_and_mining",
-    ],
-    "8": [
-        "advanced_database",
-        "cloud_computing",
-    ],
-}
-
-# Pretty names for display
-SUBJECT_NAMES = {
-    "introduction_to_it":            "Introduction to IT (CSC109)",
-    "c_programming":                 "C Programming (CSC110)",
-    "digital_logic":                 "Digital Logic (CSC111)",
-    "physics":                       "Physics (PHY113)",
-    "object_oriented_programming_cpp":"OOP in C++ (CSC161)",
-    "microprocessor":                "Microprocessor (CSC162)",
-    "computer_architecture":         "Computer Architecture (CSC208)",
-    "computer_graphics":             "Computer Graphics (CSC209)",
-    "theory_of_computation":         "Theory of Computation (CSC257)",
-    "computer_networks":             "Computer Networks (CSC258)",
-    "operating_systems":             "Operating Systems (CSC259)",
-    "database_management_system":    "DBMS (CSC260)",
-    "artificial_intelligence":       "Artificial Intelligence (CSC261)",
-    "system_analysis_and_design":    "System Analysis & Design (CSC315)",
-    "cryptography":                  "Cryptography (CSC316)",
-    "web_technology":                "Web Technology (CSC318)",
-    "multimedia_computing":          "Multimedia Computing",
-    "software_engineering":          "Software Engineering (CSC364)",
-    "egovernance":                   "E-Governance (CSC366)",
-    "dotnet_centric_computing":      ".NET Centric Computing (CSC367)",
-    "ecommerce":                     "E-Commerce (CSC368)",
-    "advanced_java_programming":     "Advanced Java (CSC409)",
-    "data_warehousing_and_mining":   "Data Warehousing & Mining (CSC410)",
-    "advanced_database":             "Advanced Database (CSC461)",
-    "cloud_computing":               "Cloud Computing (CSC467)",
-}
+EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 2200))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 320))
+COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "study_material")
 
 
-# ================================================================
-#  EPUB EXTRACTOR
-# ================================================================
 def extract_epub(path: Path, sem: str, subject: str) -> list[dict]:
     try:
-        book     = epub.read_epub(str(path))
-        chapters = []
-        num      = 1
-
+        book, documents, number = epub.read_epub(str(path)), [], 1
         for item in book.get_items():
             if item.get_type() != ebooklib.ITEM_DOCUMENT:
                 continue
             soup = BeautifulSoup(item.get_content(), "html.parser")
             for tag in soup(["script", "style", "head"]):
                 tag.decompose()
-            text = soup.get_text(separator="\n")
-            text = re.sub(r'\n{3,}', '\n\n', text).strip()
-            if len(text) < 100:
-                continue
-            chapters.append({
-                "text": text, "page": num,
-                "file": path.name, "sem": sem, "subject": subject
-            })
-            num += 1
-
-        print(f"       ✓ {path.name} → {len(chapters)} chapters")
-        return chapters
-    except Exception as e:
-        print(f"       ❌ {path.name} failed: {e}")
+            blocks = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote"])
+            text = "\n\n".join(block.get_text(" ", strip=True) for block in blocks).strip()
+            if not text:
+                text = soup.get_text(separator="\n\n").strip()
+            if len(text) >= 100:
+                documents.append({"text": text, "page": number, "file": path.name,
+                                  "sem": sem, "subject": subject})
+                number += 1
+        print(f"       ✓ {path.name} → {len(documents)} EPUB sections")
+        return documents
+    except Exception as exc:
+        print(f"       ❌ {path.name} failed: {exc}")
         return []
 
 
-# ================================================================
-#  PDF EXTRACTOR (fallback)
-# ================================================================
 def extract_pdf(path: Path, sem: str, subject: str) -> list[dict]:
     try:
-        doc   = fitz.open(str(path))
-        pages = []
-        for i in range(len(doc)):
-            text = doc[i].get_text("text")
-            if len(text.strip()) < 60:
-                continue
-            pages.append({
-                "text": text, "page": i + 1,
-                "file": path.name, "sem": sem, "subject": subject
-            })
-        doc.close()
-        print(f"       ✓ {path.name} → {len(pages)} pages")
+        document, pages = fitz.open(str(path)), []
+        for index, page in enumerate(document):
+            text = page.get_text("text").strip()
+            if len(text) >= 60:
+                pages.append({"text": text, "page": index + 1, "file": path.name,
+                              "sem": sem, "subject": subject})
+        document.close()
+        print(f"       ✓ {path.name} → {len(pages)} PDF pages")
         return pages
-    except Exception as e:
-        print(f"       ❌ {path.name} failed: {e}")
+    except Exception as exc:
+        print(f"       ❌ {path.name} failed: {exc}")
         return []
 
 
-# ================================================================
-#  CLEAN + CHUNK
-# ================================================================
-def clean(text: str) -> str:
-    text = re.sub(r'\n{3,}',    '\n\n', text)
-    text = re.sub(r'[ \t]{2,}', ' ',    text)
-    text = re.sub(r'^\s*\d+\s*$', '',   text, flags=re.MULTILINE)
-    return text.strip()
+def _clean(text: str) -> str:
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE).strip()
 
 
-def chunk(pages: list[dict]) -> list[dict]:
-    chunks = []
-    idx    = 0
-    for p in pages:
-        text  = clean(p["text"])
-        start = 0
-        while start < len(text):
-            piece = text[start: start + CHUNK_SIZE]
-            if len(piece.strip()) > 80:
-                chunks.append({
-                    "id":      f"s{p['sem']}_{p['subject']}_{p['file']}_p{p['page']}_c{idx}",
-                    "text":    piece.strip(),
-                    "file":    p["file"],
-                    "page":    p["page"],
-                    "sem":     p["sem"],
-                    "subject": p["subject"],
-                })
-                idx += 1
-            start += CHUNK_SIZE - CHUNK_OVERLAP
+def _split_long_paragraph(paragraph: str) -> list[str]:
+    sentences = re.split(r"(?<=[.!?])\s+", paragraph)
+    pieces, current = [], ""
+    for sentence in sentences:
+        words = sentence.split()
+        if not words:
+            continue
+        sentence = " ".join(words)
+        if current and len(current) + len(sentence) + 1 > CHUNK_SIZE:
+            pieces.append(current)
+            current = ""
+        if len(sentence) <= CHUNK_SIZE:
+            current = f"{current} {sentence}".strip()
+            continue
+        for word in words:
+            if current and len(current) + len(word) + 1 > CHUNK_SIZE:
+                pieces.append(current)
+                current = ""
+            current = f"{current} {word}".strip()
+    if current:
+        pieces.append(current)
+    return pieces
+
+
+def _tail(paragraphs: list[str]) -> list[str]:
+    overlap, size = [], 0
+    for paragraph in reversed(paragraphs):
+        if overlap and size + len(paragraph) > CHUNK_OVERLAP:
+            break
+        overlap.insert(0, paragraph)
+        size += len(paragraph) + 2
+    return overlap
+
+
+def chunk(documents: list[dict]) -> list[dict]:
+    """Chunk within a single PDF page or EPUB section; never across sources."""
+    chunks, index = [], 0
+    for document in documents:
+        paragraphs = []
+        for paragraph in re.split(r"\n\s*\n", _clean(document["text"])):
+            paragraph = " ".join(paragraph.split())
+            if paragraph:
+                paragraphs.extend(_split_long_paragraph(paragraph))
+
+        current = []
+        for paragraph in paragraphs:
+            if current and sum(len(item) + 2 for item in current) + len(paragraph) > CHUNK_SIZE:
+                chunks.append({**document, "id": f"s{document['sem']}_{document['subject']}_{document['file']}_p{document['page']}_c{index}",
+                               "text": "\n\n".join(current)})
+                index += 1
+                current = _tail(current)
+            current.append(paragraph)
+        if current:
+            text = "\n\n".join(current)
+            if len(text) > 80:
+                chunks.append({**document, "id": f"s{document['sem']}_{document['subject']}_{document['file']}_p{document['page']}_c{index}", "text": text})
+                index += 1
     return chunks
 
 
-# ================================================================
-#  STORE IN CHROMADB
-# ================================================================
-def store(chunks: list[dict], embedder):
+def store(chunks: list[dict], embedder) -> None:
     if not chunks:
-        print("       ⚠  No chunks to store")
+        print("       ⚠ No chunks to store")
+        return
+    collection = get_chroma_client().get_or_create_collection(
+        COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+    )
+    ids = [chunk["id"] for chunk in chunks]
+    existing = set(collection.get(ids=ids)["ids"])
+    new_chunks = [chunk for chunk in chunks if chunk["id"] not in existing]
+    if not new_chunks:
+        print(f"       ↩ {COLLECTION_NAME}: already indexed")
         return
 
-    from collections import defaultdict
-    by_col = defaultdict(list)
-    for c in chunks:
-        by_col[f"sem{c['sem']}_{c['subject']}"].append(c)
-
-    client = get_chroma_client()
-
-    for col_name, col_chunks in by_col.items():
-        col      = client.get_or_create_collection(col_name, metadata={"hnsw:space": "cosine"})
-        existing = set(col.get()["ids"])
-        new      = [c for c in col_chunks if c["id"] not in existing]
-
-        if not new:
-            print(f"       ↩  {col_name}: already indexed")
-            continue
-
-        texts = [c["text"] for c in new]
-        ids   = [c["id"]   for c in new]
-        metas = [{"file": c["file"], "page": c["page"],
-                  "sem": c["sem"], "subject": c["subject"]} for c in new]
-
-        for i in tqdm(range(0, len(texts), 64), desc=f"       {col_name}"):
-            embs = embedder.encode(texts[i:i+64], show_progress_bar=False).tolist()
-            col.upsert(embeddings=embs, documents=texts[i:i+64],
-                       ids=ids[i:i+64], metadatas=metas[i:i+64])
-
-        print(f"       ✅ {col_name}: {len(new)} chunks stored (total: {col.count()})")
+    texts = [chunk["text"] for chunk in new_chunks]
+    ids = [chunk["id"] for chunk in new_chunks]
+    metadata = [{key: chunk[key] for key in ("file", "page", "sem", "subject")} for chunk in new_chunks]
+    for start in tqdm(range(0, len(texts), 64), desc=f"       {COLLECTION_NAME}"):
+        embeddings = embedder.encode(texts[start:start + 64], show_progress_bar=False).tolist()
+        collection.upsert(embeddings=embeddings, documents=texts[start:start + 64],
+                          ids=ids[start:start + 64], metadatas=metadata[start:start + 64])
+    print(f"       ✅ {COLLECTION_NAME}: {len(new_chunks)} chunks stored (total: {collection.count()})")
 
 
-# ================================================================
-#  MAIN
-# ================================================================
-def run(sem_arg: str, subject_arg: str = None):
-    print(f"\nLoading: {EMBED_MODEL}  (downloads once ~400MB)")
+def run(sem_arg: str, subject_arg: str | None = None) -> None:
+    print(f"\nLoading embedding model: {EMBED_MODEL}")
     embedder = SentenceTransformer(EMBED_MODEL)
-
-    sems = list(SEMESTER_SUBJECTS.keys()) if sem_arg == "all" else [sem_arg]
-
+    records = available_subjects()
+    sems = sorted({record["sem"] for record in records}) if sem_arg == "all" else [sem_arg]
     for sem in sems:
-        subjects = SEMESTER_SUBJECTS.get(sem, [])
-        if not subjects:
-            print(f"⚠  Semester '{sem}' not found. Valid: 1-8 or 'all'")
+        matches = [record for record in records if record["sem"] == sem and
+                   (subject_arg is None or record["slug"] == subject_arg)]
+        if not matches:
+            print(f"⚠ No matching EPUB/PDF folders found for semester {sem}")
             continue
-
-        print(f"\n{'='*55}\n  SEMESTER {sem}\n{'='*55}")
-
-        for subject in subjects:
-            if subject_arg and subject != subject_arg:
-                continue
-
-            folder = BASE_DIR / "Data" / f"Sem{sem}" / subject
-            if not folder.exists():
-                print(f"\n  ⚠  {SUBJECT_NAMES.get(subject, subject)}")
-                print(f"     Folder missing → create: {folder}")
-                continue
-
-            files = list(folder.glob("*.epub")) + list(folder.glob("*.pdf"))
-            if not files:
-                print(f"\n  ⚠  {SUBJECT_NAMES.get(subject, subject)}")
-                print(f"     No epub/pdf found in {folder}")
-                continue
-
-            print(f"\n  📚 {SUBJECT_NAMES.get(subject, subject)}  ({len(files)} file(s))")
-            all_pages = []
-            for f in files:
-                if f.suffix.lower() == ".epub":
-                    all_pages.extend(extract_epub(f, sem, subject))
-                else:
-                    all_pages.extend(extract_pdf(f, sem, subject))
-
-            chunks = chunk(all_pages)
-            print(f"       → {len(chunks)} total chunks")
+        for record in matches:
+            print(f"\n📚 {record['label']} ({len(record['files'])} file(s))")
+            documents = []
+            for path in record["files"]:
+                extractor = extract_epub if path.suffix.lower() == ".epub" else extract_pdf
+                documents.extend(extractor(path, sem, record["slug"]))
+            chunks = chunk(documents)
+            print(f"       → {len(chunks)} structured chunks")
             store(chunks, embedder)
-
-    print("\n✅ Done! Run:  uv run streamlit run app.py")
+    print("\n✅ Done! Run: uv run streamlit run app.py")
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--sem",     required=True)
-    p.add_argument("--subject", default=None)
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sem", required=True)
+    parser.add_argument("--subject")
+    args = parser.parse_args()
     run(args.sem, args.subject)
