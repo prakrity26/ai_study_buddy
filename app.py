@@ -82,24 +82,23 @@ SYLLABUS = {
     "Semester 8": {
         "num": "8",
         "subjects": {
-            "advanced_database":        "Advanced Database (CSC461)",
-            "cloud_computing":          "Cloud Computing (CSC467)",
-            "international_marketing":  "International Marketing (MGT474)",
+            "advanced_database":                        "Advanced Database (CSC475)",
+            "advanced_networking_ipv6":                 "Advanced Networking with IPv6 (CSC477)",
+            "distributed_networking":                   "Distributed Networking (CSC478)",
+            "game_technology":                          "Game Technology (CSC479)",
+            "distributed_and_object_oriented_database": "Distributed & OO Database (CSC480)",
+            "cloud_computing":                          "Cloud Computing (CSC481)",
+            "geographical_information_system":          "Geographical Information System (CSC482)",
+            "mobile_application_development":           "Mobile Application Development (CSC484)",
+            "real_time_systems":                        "Real Time Systems (CSC485)",
+            "network_and_system_administration":        "Network & System Administration (CSC486)",
+            "embedded_systems_programming":             "Embedded Systems Programming (CSC487)",
         }
     },
 }
 
-CATALOG = available_subjects()
-SUBJECT_PATHS = {(item["sem"], item["slug"]): item["path"] for item in CATALOG}
-COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "study_material")
-SYLLABUS = {}
-for item in CATALOG:
-    semester = f"Semester {item['sem']}"
-    SYLLABUS.setdefault(semester, {"num": item["sem"], "subjects": {}})
-    SYLLABUS[semester]["subjects"][item["slug"]] = item["label"]
-
-
-def indexed_subjects(sem: str = None) -> set:
+@st.cache_data(ttl=30)
+def indexed_cols() -> set:
     try:
         c = get_chroma_client()
         collection = c.get_collection(COLLECTION_NAME)
@@ -425,6 +424,7 @@ with st.sidebar:
                 )
             if r.returncode == 0:
                 st.success(f"✅ {len(files)} file(s) indexed!")
+                indexed_cols.clear()
                 st.rerun()
             else:
                 st.error("Indexing failed — check terminal")
@@ -440,7 +440,7 @@ with st.sidebar:
     st.markdown("""
     <div style="text-align:center; padding: 12px 0; font-size: 11px; color: #aaa; line-height: 1.8;">
         <b style="color:#2196f3">Kathford AI Study Buddy</b><br>
-        Powered by RAG + Qwen 3.5<br>
+        Powered by RAG + Ollama<br>
         Answers grounded in your textbooks only
     </div>
     """, unsafe_allow_html=True)
