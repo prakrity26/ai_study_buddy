@@ -26,10 +26,8 @@ from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 try:
-    from src.catalog import available_subjects
     from src.chroma_client import get_chroma_client
 except ModuleNotFoundError:
-    from catalog import available_subjects
     from chroma_client import get_chroma_client
 
 
